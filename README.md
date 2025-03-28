@@ -1,4 +1,10 @@
-# project that contains server - client architectures in python
+# src/struct_bidirectional
+project that contains server - client architectures in python for a bi-directional broadcast architecture (server <-> client)
+
+
+# src/struct_monodirectional 
+project that contains server - client architectures in python for a unidirectional broadcast architecture (server -> client) 
+
 scripts that implement a UDP broadcasting system that can run in separate Jupyter notebooks: UDP Broadcast Server: Sends messages with timestamps and state information to clients UDP Broadcast Client: Receives broadcast messages and displays the information. Create two separate Jupyter notebooks:
 
 1. Server notebook: Copy the server code into it
