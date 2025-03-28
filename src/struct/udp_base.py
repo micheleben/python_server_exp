@@ -45,7 +45,8 @@ class UDPCommunicator:
         self.message_handlers = {}
         
         # Execution statistics
-        self.start_time = None
+        # the time will be reset in run
+        self.start_time = time.time()
         self.execution_stats = {
             "node_id": self.id,
             "port": self.port
@@ -64,7 +65,12 @@ class UDPCommunicator:
         self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         
         # Bind socket to address and port
+        print(f"DEBUG - Binding socket to {bind_addr}:{self.port}")
         self.socket.bind((bind_addr, self.port))
+
+        # Get actual bound address and port
+        bound_addr = self.socket.getsockname()
+        print(f"DEBUG - Socket bound to {bound_addr[0]}:{bound_addr[1]}")
         
         # Register with selector
         self.selector.register(self.socket, selectors.EVENT_READ, self.handle_received_data)
@@ -105,11 +111,15 @@ class UDPCommunicator:
             Response data
         """
         sender_ip, sender_port = sender_addr
-        return {
+        print(f"DEBUG - Processing PING from {sender_ip}:{sender_port}")
+        
+        response= {
             "status": "pong",
             "timestamp": datetime.datetime.now().isoformat(),
             "node_id": self.id
         }
+        print(f"DEBUG - Sending PING response: {response}")
+        return response
     
     def handle_received_data(self, sock, mask):
         """Handle incoming UDP data
@@ -201,7 +211,8 @@ class UDPCommunicator:
         command_str = message.get("command")
         args = message.get("args", {})
         
-        print(f"Received command: {command_str} with args: {args}")
+        print(f"\nDEBUG - Received command: {command_str} from {sender_ip}:{sender_port}")
+        print(f"DEBUG - Command args: {args}")
         
         try:
             # Convert command string to enum
@@ -321,7 +332,15 @@ class UDPCommunicator:
             # Encode the message
             data = encode_message(message)
             
+            # Get message type
+            msg_type_str = message.get("message_type", "UNKNOWN")
+            if msg_type_str == "RESPONSE":
+                in_response_to = message.get("in_response_to", "unknown")
+                data_str = message.get("data", {})
+                print(f"DEBUG - Sending RESPONSE {len(data)} bytes to message {in_response_to} to {target_addr[0]}:{target_addr[1]}")
+                print(f"DEBUG - Response data: {data_str}")
             # Send the message
+            print(f"DEBUG - Socket sendto {target_addr[0]}:{target_addr[1]} - {len(data)} bytes")
             self.socket.sendto(data, target_addr)
             
             # Log the sent message
@@ -428,6 +447,12 @@ class UDPCommunicator:
         # Set start time
         self.start_time = time.time()
         self.execution_stats["start_time"] = datetime.datetime.now().isoformat()
+
+        return self._run_event_loop(between_events_func)
+
+    def _run_event_loop(self, between_events_func=None):
+        """Internal method to run the event loop"""
+        # Indicator for user that we're waiting for messages (used in default behavior)
         
         # Indicator for user that we're waiting for messages (used in default behavior)
         waiting_indicator = ['|', '/', '-', '*']

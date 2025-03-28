@@ -201,78 +201,7 @@ class UDPServer(UDPCommunicator):
                 "success": False,
                 "error": f"Unknown custom action: {action}"
             }
-        
-    def _handle_status_message(self, message: Dict[str, Any], sender_addr: Tuple[str, int]):
-        """Override to handle status messages and ignore our own broadcasts
-        
-        Args:
-            message: The decoded status message
-            sender_addr: Sender's address (ip, port)
-        """
-        # Extract server ID from message details
-        details = message.get("details", {})
-        sender_server_id = details.get("server_id", "unknown")
-        
-        # Ignore our own broadcasts
-        if sender_server_id == self.id:
-            return
-        
-        # Call the parent implementation for messages from other servers
-        super()._handle_status_message(message, sender_addr)
-
-
-    def handle_received_data(self, sock, mask):
-        """Override to filter out our own broadcast messages before processing"""
-        try:
-            data, addr = sock.recvfrom(4096)
-            sender_ip, sender_port = addr
-            
-            # Try to decode the message to check if it's our own
-            try:
-                message = decode_message(data)
-                msg_type_str = message.get("message_type", "UNKNOWN")
-                
-                # If it's a status message, check for our own ID
-                if msg_type_str == "STATUS":
-                    details = message.get("details", {})
-                    sender_server_id = details.get("server_id", "unknown")
-                    
-                    # Ignore our own broadcasts
-                    if sender_server_id == self.id:
-                        return
-            except:
-                # If any error in decoding, process normally
-                pass
-            
-            # First call the parent implementation for standard processing
-            super().handle_received_data(sock, mask)
-            
-            # Then update client tracking for non-self messages
-            try:
-                # Update client tracking
-                now = datetime.datetime.now().isoformat()
-                if addr not in self.known_clients:
-                    # New client
-                    self.known_clients[addr] = {
-                        "ip": sender_ip,
-                        "port": sender_port,
-                        "first_seen": now,
-                        "message_count": 1
-                    }
-                    print(f"\nNew client connected: {sender_ip}:{sender_port}")
-                else:
-                    # Existing client
-                    self.known_clients[addr]["message_count"] += 1
-                
-                # Update last seen time
-                self.client_last_seen[addr] = now
-                
-            except Exception as e:
-                print(f"Error updating client tracking: {e}")
-                
-        except Exception as e:
-            print(f"Error in server handle_received_data: {e}")
-
+    
     def _broadcast_status_thread(self):
         """Thread function for status broadcasting"""
         while not self.stop_broadcast:
@@ -314,36 +243,169 @@ class UDPServer(UDPCommunicator):
         raise KeyboardInterrupt("Server shutdown requested")
     
     def handle_received_data(self, sock, mask):
-        """Override to track clients when they send messages"""
-        # First call the parent implementation
-        super().handle_received_data(sock, mask)
-        
-        # Then do any server-specific processing
+        """Override to handle all message types directly"""
         try:
+            # Receive the data
             data, addr = sock.recvfrom(4096)
             sender_ip, sender_port = addr
             
-            # Update client tracking
-            now = datetime.datetime.now().isoformat()
-            if addr not in self.known_clients:
-                # New client
-                self.known_clients[addr] = {
-                    "ip": sender_ip,
-                    "port": sender_port,
-                    "first_seen": now,
-                    "message_count": 1
-                }
-                print(f"\nNew client connected: {sender_ip}:{sender_port}")
-            else:
-                # Existing client
-                self.known_clients[addr]["message_count"] += 1
-            
-            # Update last seen time
-            self.client_last_seen[addr] = now
-            
+            # Try to decode the message
+            try:
+                message = decode_message(data)
+                msg_type_str = message.get("message_type", "UNKNOWN")
+                
+                # Handle based on message type
+                if msg_type_str == "STATUS":
+                    details = message.get("details", {})
+                    source_id = details.get("server_id", "")
+                    
+                    # If it matches our ID, this is our own broadcast
+                    if source_id == self.id:
+                        return  # Ignore our own broadcasts
+                    
+                    # Process status from other sources normally
+                    print(f"Received status from {sender_ip}:{sender_port}: {message.get('state', 'unknown')}")
+                    print(f"Status details: {details}")
+                    
+                elif msg_type_str == "COMMAND":
+                    # Process commands directly here
+                    msg_id = message.get("message_id")
+                    command_str = message.get("command")
+                    args = message.get("args", {})
+                    
+                    print(f"\nReceived command: {command_str} from {sender_ip}:{sender_port}")
+                    print(f"Command args: {args}")
+                    
+                    try:
+                        # Convert command string to enum
+                        command = CommandType[command_str]
+                        
+                        # Check if we have a handler for this command
+                        if command in self.command_handlers:
+                            # Call the handler and get response data
+                            response_data = self.command_handlers[command](addr, args)
+                            
+                            # Send success response
+                            response = create_response_message(
+                                in_response_to=msg_id,
+                                success=True,
+                                data=response_data
+                            )
+                            self.send_message(response, addr)
+                        else:
+                            # Send error for unhandled command
+                            error_msg = create_error_message(
+                                error_code=1004,
+                                error_message=f"No handler for command: {command_str}",
+                                in_response_to=msg_id
+                            )
+                            self.send_message(error_msg, addr)
+                            
+                    except Exception as e:
+                        # Send error if processing fails
+                        error_msg = create_error_message(
+                            error_code=1003,
+                            error_message=f"Error processing command: {str(e)}",
+                            in_response_to=msg_id
+                        )
+                        self.send_message(error_msg, addr)
+                
+                # Update client tracking for all non-self messages
+                now = datetime.datetime.now().isoformat()
+                if addr not in self.known_clients:
+                    # New client
+                    self.known_clients[addr] = {
+                        "ip": sender_ip,
+                        "port": sender_port,
+                        "first_seen": now,
+                        "message_count": 1
+                    }
+                    print(f"\nNew client connected: {sender_ip}:{sender_port}")
+                else:
+                    # Existing client
+                    self.known_clients[addr]["message_count"] += 1
+                
+                # Update last seen time
+                self.client_last_seen[addr] = now
+                
+            except Exception as e:
+                print(f"Error processing message: {e}")
+                
         except Exception as e:
-            # Ignore any errors, main processing is done in parent
-            pass
+            print(f"Error in server handle_received_data: {e}")
+    
+    def _handle_command_message(self, message: Dict[str, Any], sender_addr: Tuple[str, int]):
+        """Handle a command message"""
+        sender_ip, sender_port = sender_addr
+        msg_id = message.get("message_id")
+        command_str = message.get("command")
+        args = message.get("args", {})
+        
+        # Check if client specified a response port
+        response_port = message.get("_response_port", sender_port)
+        response_addr = (sender_ip, response_port)
+        
+        print(f"\nReceived command: {command_str} from {sender_ip}:{sender_port}")
+        print(f"Command args: {args}")
+        print(f"Will send response to: {response_addr[0]}:{response_addr[1]}")
+        
+        try:
+            # Convert command string to enum
+            command = CommandType[command_str]
+            
+            # Validate command arguments
+            is_valid, error_msg = validate_command_args(command, args)
+            
+            if not is_valid:
+                # Send error response for invalid arguments
+                error_msg = create_error_message(
+                    error_code=1002,
+                    error_message=error_msg,
+                    in_response_to=msg_id
+                )
+                self.send_message(error_msg, response_addr)  # Use response_addr
+                return
+            
+            # Check if we have a handler for this command
+            if command in self.command_handlers:
+                # Call the handler and get response data
+                try:
+                    response_data = self.command_handlers[command](sender_addr, args)
+                    
+                    # Send success response
+                    response = create_response_message(
+                        in_response_to=msg_id,
+                        success=True,
+                        data=response_data
+                    )
+                    self.send_message(response, response_addr)  # Use response_addr
+                    
+                except Exception as e:
+                    # Send error response if handler raises exception
+                    error_msg = create_error_message(
+                        error_code=1003,
+                        error_message=f"Error processing command: {str(e)}",
+                        in_response_to=msg_id
+                    )
+                    self.send_message(error_msg, response_addr)  # Use response_addr
+            else:
+                # Send error response for unhandled command
+                error_msg = create_error_message(
+                    error_code=1004,
+                    error_message=f"No handler for command: {command_str}",
+                    in_response_to=msg_id
+                )
+                self.send_message(error_msg, response_addr)  # Use response_addr
+        
+        except KeyError:
+            # Send error response for unknown command
+            error_msg = create_error_message(
+                error_code=1005,
+                error_message=f"Unknown command: {command_str}",
+                in_response_to=msg_id
+            )
+            self.send_message(error_msg, response_addr)  # Use response_addr
+    
     
     def _cleanup_stale_clients(self, timeout=60):
         """Clean up clients that haven't been seen recently
@@ -395,17 +457,13 @@ class UDPServer(UDPCommunicator):
         Args:
             between_events_func: Optional function to call between checking for events
         """
-        # Set start time BEFORE starting broadcasting
-        self.start_time = time.time()
-        self.execution_stats["start_time"] = datetime.datetime.now().isoformat()
-
         # Start broadcasting before the main loop
         self.current_state = "ACTIVE"
         self.start_broadcasting()
         
         try:
             # Run the main event loop from the base class
-            return super()._run_event_loop(between_events_func)
+            return super().run(between_events_func)
         
         finally:
             # Make sure to stop broadcasting when the server stops
